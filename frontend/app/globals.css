@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0e1117;
+  --bg-deep: #0a0d12;
+  --card: #171d26;
+  --card-raised: #1c2432;
+  --line: #232c3b;
+  --line-strong: #33415c;
+  --accent: #22d3ee;
+  --accent-dim: rgba(34, 211, 238, 0.14);
+  --txt: #e8edf4;
+  --mut: #8b98ab;
+
+  /* health bands */
+  --healthy: #22c55e;
+  --watch: #eab308;
+  --degraded: #f97316;
+  --critical: #ef4444;
+
+  /* machine states */
+  --st-running: #22c55e;
+  --st-starved: #eab308;
+  --st-blocked: #f97316;
+  --st-maintenance: #94a3b8;
+  --st-changeover: #38bdf8;
+
+  /* confidence channel (deliberately distinct from health bands) */
+  --conf-hi: #67e8f9;
+  --conf-mid: #38bdf8;
+  --conf-lo: #64748b;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-deep: var(--bg-deep);
+  --color-card: var(--card);
+  --color-card-raised: var(--card-raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-txt: var(--txt);
+  --color-mut: var(--mut);
+  --color-healthy: var(--healthy);
+  --color-watch: var(--watch);
+  --color-degraded: var(--degraded);
+  --color-critical: var(--critical);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mut);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3547;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

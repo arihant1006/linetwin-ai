@@ -97,6 +97,7 @@ def compute_twin_artifacts(conn) -> dict:
             "confidence": st.confidence if scored else np.nan,
             "status": st.status if scored else "",
             "causes_json": json.dumps(st.causes[:3]) if scored else "[]",
+            "explanation_json": json.dumps(st.explanation) if scored else "[]",
         })
     db.insert_metrics(conn, pd.DataFrame(met_rows))
     conn.execute("DELETE FROM station_metrics WHERE bucket_ts < ?",

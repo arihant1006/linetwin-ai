@@ -63,6 +63,9 @@ CONTROL is deliberately impossible: PLCAdapter.write() raises RuntimeError by de
 
 ## Quickstart
 
+> **New:** the primary demo path is now a FastAPI + Next.js stack — see
+> [FRONTEND.md](FRONTEND.md). The Streamlit app below still works as before.
+
 ```bash
 python -m venv .venv
 .venv\Scripts\activate        # Windows   (source .venv/bin/activate on Linux/macOS)

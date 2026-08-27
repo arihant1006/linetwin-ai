@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS station_metrics (
     starvation_rate REAL, blocking_rate REAL, defect_rate REAL,
     sensor_coverage REAL, health_score REAL, anomaly_score REAL,
     bottleneck_score REAL, bottleneck_prob REAL, confidence REAL,
-    status TEXT, causes_json TEXT,
+    status TEXT, causes_json TEXT, explanation_json TEXT,
     PRIMARY KEY (bucket_ts, station_id));
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id TEXT PRIMARY KEY, ts TEXT, station_id TEXT, severity TEXT,
@@ -67,7 +67,21 @@ METRIC_COLS = ["bucket_ts", "station_id", "throughput_vph", "avg_cycle_time",
                "ct_deviation_pct", "queue_length", "queue_pressure", "starvation_rate",
                "blocking_rate", "defect_rate", "sensor_coverage", "health_score",
                "anomaly_score", "bottleneck_score", "bottleneck_prob", "confidence",
-               "status", "causes_json"]
+               "status", "causes_json", "explanation_json"]
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Additive migration: add columns that pre-existing DB files are missing."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(station_metrics)")}
+    if cols and "explanation_json" not in cols:
+        conn.execute("ALTER TABLE station_metrics ADD COLUMN explanation_json TEXT")
+        conn.commit()
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(DDL)
+    ensure_schema(conn)
+    conn.commit()
 
 
 def resolve_db_path(db_path: str | Path | None = None) -> Path:

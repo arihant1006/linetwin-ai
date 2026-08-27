@@ -1,0 +1,265 @@
+DISCUSSION LOG - code review notes (things to revisit/fix later)
+==================================================================
+
+[app/config/plant_config.py]
+
+1. MODEL_CT_MULTIPLIER, MODEL_TORQUE_DELTA_NM, HIGH_MIX_MODEL - possibly DEAD CODE
+   - Defined at lines 23-25, grepped whole repo, zero usages anywhere else.
+   - MODEL_CT_MULTIPLIER: looks like "flat cycle-time multiplier per vehicle model"
+     (Model-C = 1.18x). Real cycle-time-by-model logic actually comes from
+     STATION_TYPE_MODEL_FACTOR (per station-type x model, more granular) used in
+     app/simulation/stations.py::service_time().
+   - MODEL_TORQUE_DELTA_NM: looks like "additive Nm torque delta per model"
+     (Model-C = +4.5 Nm). Real torque-by-model logic is a SEPARATE hardcoded
+     inline dict in app/simulation/sensors.py:96-97, and it's MULTIPLICATIVE
+     (Model-C = 1.07x target torque), not additive. Different mechanism, different
+     numbers, not the same as this constant.
+   - HIGH_MIX_MODEL: looks like "the model used as the high-mix scenario model".
+     Real scenario (SCENARIOS["high_modelc_mix"]) just hardcodes the string
+     "Model-C" directly in params["model_mix"] instead of referencing this.
+   - ACTION: confirm truly unused, then either (a) delete all three, or
+     (b) wire them in as the actual source of truth and remove the duplicate
+     inline logic in stations.py / sensors.py. Leaning (a) - STATION_TYPE_MODEL_FACTOR
+     is the better/more granular design already.
+   - STATUS: pending review, not yet removed.
+
+   Plain-language recap (for our own notes):
+   - HIGH_MIX_MODEL = "Model-C": just a label meaning "Model-C is the model we
+     spike in the high-mix stress scenario." Dead - the scenario hardcodes the
+     string "Model-C" directly instead of reading this constant.
+   - MODEL_TORQUE_DELTA_NM: meant as "add this many extra Nm of torque for this
+     model" (e.g. Model-C = +4.5 Nm, additive). Dead - actual torque generation
+     in sensors.py uses a different, separately hardcoded rule: "+7% of that
+     station's own target torque" (multiplicative, not additive). Same pattern
+     as MODEL_CT_MULTIPLIER: written here, never wired up, real logic lives
+     elsewhere with different numbers.
+
+2. criticality field (high/medium/low, CRITICALITY_MAP / CRITICALITY_LOOKUP) -
+   DECORATIVE ONLY, not wired into any scoring logic
+   - Grepped app/ for "criticality": only hits are (a) assignment in
+     plant_config.py::build_station_specs, (b) stored as a DB column
+     (app/data/database.py, app/data/schemas.py), (c) displayed in the station
+     table in app/ui/components.py.
+   - NOT read anywhere in analytics/ (health.py, bottleneck.py, anomaly.py,
+     inference.py) - so a "Watch"/"Degraded" dip at a high-criticality station
+     (e.g. B05, structural weld) is scored/alerted identically to the same dip
+     at a low-criticality station. Criticality doesn't currently change health
+     score, bottleneck score, alert threshold, or recommendation ranking.
+   - IMPROVEMENT IDEA: weight risk/urgency by criticality - e.g. lower the
+     alert threshold or boost bottleneck/urgency score for high-criticality
+     stations, so the twin surfaces "important station degrading" above
+     "unimportant station degrading" at the same raw score.
+   - STATUS: pending decision - confirmed gap, not yet fixed.
+
+3. CT_TARGET_OVERRIDES / CT_STD_OVERRIDES - per-station override mechanism,
+   plus a dead entry, plus an idea to generalize it
+   - CT_TARGET_OVERRIDES = {"B07": 68.0, "B07_STD": None}
+     CT_STD_OVERRIDES = {"B07": 5.0}
+   - PURPOSE: TYPE_PARAMS gives fast generic defaults per station TYPE (e.g. all
+     "fastening" stations default to ct=48.0s). These override dicts let one
+     SPECIFIC station deviate from its type default without touching the shared
+     table (used to hand-tune B07: 68s vs the 48s fastening default, std 5.0 vs
+     3.0) - because B07 is the demo's "star" station (target of b07_mechanical,
+     defect origin of f12_quality_defect, root cause of multi_causal). Giving it
+     an already-slightly-marginal baseline makes its later scenario degradation
+     read as plausible ("this station was already borderline") rather than a
+     perfectly average station teleporting into crisis.
+   - DEAD ENTRY: "B07_STD": None sits inside CT_TARGET_OVERRIDES (keyed by real
+     station IDs like "B07"), but "B07_STD" isn't a station ID - never looked up
+     by build_station_specs(). Likely an abandoned first attempt before
+     CT_STD_OVERRIDES was created properly as its own dict. Should be deleted.
+   - IDEA TO EXPLORE: generalize this override mechanism - currently it's two
+     manually-maintained dicts, ad hoc, one station. Worth exploring whether to
+     make per-station overrides a more systematic/data-driven pattern (e.g. a
+     single overrides table/dataclass per station covering ct, std, torque,
+     sensor_coverage, etc. together) instead of one dict per field that could
+     drift out of sync as more stations need tuning. Revisit once we've seen
+     how many other places in the codebase use a similar "type default + manual
+     override" pattern.
+   - STATUS: open exploration, not yet designed.
+
+4. SCENARIOS dict - scenarios are IDENTITY-BOUND (hardcoded station IDs), not
+   PROPERTY-BOUND - limits the "scalability to other lines/plants" story
+   - Every scenario in SCENARIOS wires its failure mechanics to specific station
+     ID strings ("B07", "P04", "P03"/"P05" for blocking, defect_chain tuples of
+     specific IDs). E.g. b07_mechanical always targets literally "B07".
+   - WHY THIS IS OK for now: only 7 scenarios, each hand-engineered as a
+     targeted "stress test" for the inference engine (e.g. b07_mechanical's
+     sensor_dropout_p=0.85 on exactly torque+vibration was chosen deliberately
+     to prove sensor-dropout resilience, not sampled/generic). Hardcoding keeps
+     the demo reproducible and legible - a judge can read exact mechanics in
+     one file.
+   - THE GAP: the brief's "Scalability & ROI" solutioning area explicitly asks
+     "how a prototype built for one line could reasonably extend to other
+     lines, plants, or sites with different starting conditions." Right now
+     every scenario is bolted to specific station IDs, not to STATION
+     PROPERTIES (e.g. "pick any high-criticality + sparse-coverage fastening
+     station and degrade it"). If station IDs/layout changed (different plant),
+     every scenario breaks - would need code rewrites, not just re-running with
+     a different config. The target_station field already hints the design
+     WANTED to be station-agnostic; it isn't fully there yet.
+   - ACTION: explore generalizing scenario definitions to be property-driven
+     (select target station(s) by criteria - criticality, telemetry_class,
+     station_type - rather than hardcoded IDs) so the same 7 scenario
+     "templates" could run against a differently-laid-out plant. Strengthens
+     the scalability story for the business proposal too.
+   - STATUS: agreed direction - will try to make this more generic.
+
+[app/simulation/*.py]
+
+5. RICH_SENSORS / MEDIUM_SENSORS / SPARSE_SENSORS (plant_config.py) - DEAD, same
+   pattern as items in section 1
+   - Grepped whole repo: only ever referenced at their own definition lines.
+   - Real sensor-per-class logic lives in a SEPARATE dict, CLASS_SENSORS, in
+     app/simulation/sensors.py (different shape: rich has 5 optional sensors,
+     medium has just ["temperature"], sparse has none - cycle_time/machine_state
+     handled separately as ALWAYS_SENSORS, manual_checklist via MANUAL_CLASS set).
+   - "production_count" appears in MEDIUM_SENSORS and SPARSE_SENSORS (plant_config)
+     as if it's a real sensor, but grepped for "production_count" across app/ -
+     ZERO other hits. It's not a column in TEL_OUTPUT_COLS or anywhere in the DB
+     schema. Never implemented, dead on arrival, not just unused-but-real.
+   - ACTION: same as item 1 - delete the three dead lists (CLASS_SENSORS in
+     sensors.py is the real, live source of truth), and decide whether
+     production_count is worth actually adding as a real sensor or dropping the
+     idea entirely.
+   - STATUS: pending review, not yet removed.
+
+6. Undocumented "* 1.4" dropout amplification in TelemetryBuilder.build()
+   (app/simulation/sensors.py line ~74)
+   - Code: `present = (rng.random() < p_cov) and (rng.random() >= drop_p * 1.4)
+     and not hard_out`, where drop_p = prof.dropout_prob_at(ts) =
+     scenario's configured sensor_dropout_p * ramp(ts) (ramp maxes at 1.0).
+   - EFFECT: a scenario's configured sensor_dropout_p (e.g. b07_mechanical's
+     0.85, read from plant_config.py as "85% chance sensor missing") gets
+     multiplied by an undocumented 1.4x here. Once ramp=1 (failure fully
+     kicked in), effective dropout = min(1.0, 0.85*1.4=1.19) -> station's
+     torque/vibration sensors are ALWAYS missing, not 85% of the time.
+   - WHY IT MIGHT BE FINE: could be a deliberate "make the demo unambiguous"
+     choice - a judge staring at a live dashboard benefits from a station going
+     fully dark rather than flickering at 85%. But it's a silent, unnamed
+     magic number with no comment - anyone reading plant_config.py's params
+     dict alone would reasonably expect literal 85%, not ~100%.
+   - ACTION: at minimum, name the constant and comment why (e.g.
+     DROPOUT_AMPLIFICATION = 1.4  # push configured dropout toward full outage
+     once a failure is fully ramped, for demo clarity). Consider whether scenario
+     params should just state the true effective probability instead.
+   - STATUS: pending decision - confirm intent, then either document or remove.
+
+7. Possibly-unintended arrival-rate "wave" shape in VehicleGenerator.entry_times()
+   (app/simulation/vehicles.py line ~45)
+   - Code: `wave = 1.0 + 0.18 * np.sin(2 * np.pi * shift_pos)`, shift_pos in [0,1]
+     across the whole shift (6am-10pm).
+   - EFFECT: this is a FULL sine cycle across the shift, not a single hump -
+     arrival rate is baseline at shift start (6am), peaks +18% a quarter of the
+     way in (~10am), back to baseline at midday (~2pm), DIPS -18% three-quarters
+     in (~6pm), back to baseline at shift end (10pm).
+   - QUESTION: is a morning peak + evening trough the intended real-world shape?
+     Or was `sin(pi * shift_pos)` (single midday hump: 0 -> 1 -> 0, no artificial
+     evening dip, more typical of a real demand curve) what was meant, and
+     `2 * pi` is an accidental doubling?
+   - ACTION: confirm with whoever wrote this simulation whether the evening dip
+     is intentional (e.g. modeling shift-change slowdown) or a mistake.
+   - STATUS: open question, not yet resolved.
+
+8. line.py: defective_from computed then discarded; stored substitute
+   (defect_flags) is order-scrambled and unused downstream anyway
+   (app/simulation/line.py, per-vehicle loop ~line 52-119)
+   - `defective_from` tracks the TRUE origin station of a vehicle's defect
+     (first station where defect_here becomes True). Only ever used for a
+     boolean check ("DEFECT" if defective_from else "SUSPECT"/"OK") - the
+     actual station value is never stored anywhere.
+   - What IS stored instead: "defect_flags": sorted(set(flags)) - alphabetically
+     sorted station IDs, NOT visit order. Production order is Body->Paint->Final
+     (B->P->F), but alphabetically B<F<P - so a real chain B07->P03->F10 gets
+     stored as ["B07","F10","P03"], silently scrambled relative to true order.
+   - Grepped defect_flags/quality_status across app/analytics/ - ZERO hits.
+     Written to the `vehicles` DB table (app/data/database.py,
+     app/data/schemas.py) and never read back by anything. Dead pipeline: real
+     per-vehicle defect-origin data is computed and persisted, then unused.
+   - ACTION: either wire defect_flags/quality_status into something useful
+     (e.g. vehicle detail view, or feed real per-vehicle order into propagation
+     instead of re-simulating - see item 9), or stop computing/storing it if
+     genuinely not needed. At minimum fix the sort to preserve visit order.
+   - STATUS: pending review, not yet fixed.
+
+9. Propagation Sankey does NOT trace a real vehicle's recorded path - it
+   independently re-simulates a proxy chain (app/analytics/propagation.py)
+   - build_chains_from_telemetry() finds stations where telemetry's
+     defective_here==1, then calls propagate_defect(origin, ts, ...), which
+     runs its OWN fresh RNG hop-by-hop simulation (p_propagate=0.55, decay=0.88)
+     to invent a plausible downstream path and detection point.
+   - It never joins telemetry by vehicle_id to look up where that SPECIFIC
+     defective vehicle actually went next - even though that real recorded
+     path exists in the telemetry table (per station, per vehicle_id, real
+     timestamps) and could be used directly.
+   - EFFECT: the propagation Sankey / defect chains shown in the demo (e.g.
+     "B07 -> P03 -> F10") are statistically plausible PROXIES generated after
+     the fact from an origin station, not literal reconstructions of a
+     simulated vehicle's actual journey. Connects to item 8 - the real
+     per-vehicle trail (defective_from/defect_flags) is computed in line.py
+     and then unused; propagation.py could have used it instead of
+     re-simulating from scratch.
+   - WHY IT MIGHT BE FINE: still physically plausible, deterministic given
+     seed, and the scenario's declared defect_chain (e.g. b07_mechanical's
+     ("B07","P03","F10")) is designed to roughly match what propagate_defect
+     tends to produce. But worth knowing precisely what's real vs. proxied
+     before a judge asks "show me that exact vehicle's full trail."
+   - ACTION: consider whether to (a) leave as-is and be precise in the pitch
+     about what's simulated-proxy vs. literally-traced, or (b) rework
+     propagation to join telemetry by vehicle_id and use the real recorded
+     path when available, falling back to propagate_defect() only when no
+     concrete vehicle path exists.
+   - STATUS: pending decision, not yet fixed.
+
+[app/analytics/whatif.py, app/analytics/anomaly.py]
+
+10. whatif.py simulate_action(): eff_ct computed via max(x, x) - pointless no-op,
+    likely an unfinished clamp (line 68-70)
+    - Code:
+        eff_ct = {s["station_id"]: max(
+            s["avg_cycle_time"] or 60.0,
+            (s["avg_cycle_time"] or 60.0)) for s in states}
+    - Both arguments to max() are the exact same expression, so max() does
+      nothing - eff_ct[s] is just s["avg_cycle_time"] or 60.0 with a useless
+      wrapper. Reads like the second argument was meant to be a real floor
+      value (e.g. a minimum plausible cycle time) and got left as a duplicate
+      of the first instead.
+    - ACTION: either remove the pointless max() wrapper, or decide what the
+      intended floor value was and put it in.
+    - STATUS: pending decision, not yet fixed.
+
+11. anomaly.py RichStationAnomalyModel: dead feature_names_in_ branch, and a
+    real latent shape-mismatch bug masked by a broad except Exception
+    - fit() (line 47-61): per station, drops any column that's entirely NaN
+      for that station's history (`X.dropna(axis=1, how='all')`) before
+      calling `model.fit(X.values)` - fitting on a raw numpy array, not a
+      DataFrame. Different stations can end up with DIFFERENT numbers of
+      columns actually fit (3, 4, 5, or 6, depending which of the 6 self.cols
+      survived dropna for that station).
+    - score() (line 63-72): checks `hasattr(model, "feature_names_in_")` to
+      decide which columns to use - but since fit() passes X.values (a bare
+      array, not a DataFrame), sklearn NEVER sets feature_names_in_ on this
+      model. That branch is dead; the code always falls through to the else
+      branch, which builds a vector using the FULL fixed self.cols list (6
+      columns) regardless of how many columns the model was actually trained
+      on.
+    - REAL BUG: if a station's history had any fully-NaN column (very
+      plausible for medium/sparse stations missing e.g. vibration data
+      entirely - combine_anomaly()'s own weighting logic explicitly expects
+      this), the model was fit on fewer than 6 columns, but score() always
+      sends a 6-column vector to model.decision_function() -> sklearn raises
+      a shape-mismatch ValueError.
+    - MASKED: confirmed in app/analytics/inference.py lines 79-83 - the only
+      call site wraps `self.iforest.score(sid, latest_row)` in a bare
+      `try/except Exception: if_sc_val = None`. So the crash never surfaces -
+      it just silently degrades to "no IsolationForest signal for this
+      station," indistinguishable from the station never having had enough
+      history to fit a model in the first place. Currently invisible, but a
+      real correctness gap in the auxiliary anomaly signal for exactly the
+      sensor-poor stations this product is supposed to differentiate on.
+    - ACTION: track per-model which columns it was actually fit on (e.g.
+      store the survived column list alongside the model in self.models, or
+      switch fit() to keep a DataFrame so feature_names_in_ IS set for real)
+      and use that same column set at score time. Remove the dead hasattr
+      branch once fixed.
+    - STATUS: pending fix, not yet fixed.
